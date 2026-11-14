@@ -74,7 +74,7 @@ cd Final_Minirocket
 export PYTHONPATH="$PWD/code:$PWD/compat_windows"     # on macOS/Linux use "$PWD/code"
 export NUMBA_NUM_THREADS=1
 
-# 1. check everything works (64 tests OK, 1 skipped; the first run compiles code, so allow a minute)
+# 1. check everything works (73 tests OK, 1 skipped; the first run compiles code, so allow a minute)
 python -B -m unittest discover -s tests
 
 # 2. Module 1: prune two datasets with both scoring methods, keeping 100% / 50% / 20% of the groups
@@ -93,6 +93,10 @@ python -B -m experiments.analyse_bias results/quick_bias
 The data is read from `data/Univariate_ts/`; these scripts never download anything (see
 [Setup](#4-setup)). Each run needs a **new** output folder. Step 2 took about 16 seconds on my
 laptop, including compilation.
+
+To look at one dataset without writing any files, use the demo
+([section 10.3](#103-experimentspruning_demopy-one-dataset-nothing-saved)):
+`python -B -m experiments.pruning_demo --dataset GunPoint`.
 
 ---
 
@@ -164,7 +168,7 @@ Windows only. My own experiment scripts do not need it. Details are in
 ### 4.4 Check
 
 ```bash
-python -B -m unittest discover -s tests               # 64 tests OK, 1 skipped (an Apple ARM64-only test)
+python -B -m unittest discover -s tests               # 73 tests OK, 1 skipped (an Apple ARM64-only test)
 python tools/generate_joint_ppv.py --check            # Arnav's generated kernels are current
 ```
 
@@ -186,12 +190,18 @@ Final_Minirocket/                       <- Arnav's project (no existing file cha
 │   ├── minirocket_pruned.py              Module 1: keep mask, pruned transform, the two ways of ranking groups
 │   └── minirocket_stratified.py          Module 3: fitting with stratified (or uniform) threshold examples
 ├── tests/test_pruned.py                  13 tests for my code
+├── tests/test_pruning_demo.py            5 tests for the demo (adapted from Shreyas's integration tests)
+├── tests/test_analysis_scripts.py        4 tests for eta squared and the bootstrap interval
 ├── experiments/                          EVERYTHING BELOW IS MINE
 │   ├── group_pruning.py                  runs the experiments (pruning and threshold choices)
+│   ├── pruning_demo.py                   one dataset in memory, prints a table (adapted from Shreyas, section 14)
 │   ├── summarise.py                      accuracy / time tables and break-even points
 │   ├── controls.py, analyse_controls.py  Module 2: random groups and smaller models
 │   ├── analyse_bias.py                   Module 3: stratified vs uniform comparison
 │   ├── final_analysis.py                 the statistical tests over all runs
+│   ├── equivalence.py                    bootstrap intervals for the accuracy changes (section 19.13)
+│   ├── cross_platform.py                 macOS vs Windows, fit by fit (section 19.13)
+│   ├── threshold_class_share.py          how much a threshold depends on the series' class (section 19.13)
 │   ├── compare_to_paper.py               our MiniRocket vs the published numbers
 │   ├── sanity_keepall.py                 keep-everything check against Arnav's transform
 │   └── energy.py                         energy measurement (did not work on this laptop)
@@ -582,9 +592,42 @@ in `data/Univariate_ts/`.
 | `experiments/summarise.py` | the run folder |
 | `experiments/analyse_bias.py` | the run folder, `--subsets` (dataset groups file), `--by-keep-fraction`, `--output` |
 | `experiments/controls.py` | `--data`, `--output-dir`, `--datasets`, `--seeds` (0 1 2), `--keep-fractions` (0.75 to 0.1), `--resume` |
-| `experiments/analyse_controls.py`, `final_analysis.py`, `compare_to_paper.py` | read the saved results; no options needed |
+| `experiments/analyse_controls.py`, `final_analysis.py`, `compare_to_paper.py`, `equivalence.py` | read the saved results; no options needed |
+| `experiments/cross_platform.py` | none to read the saved results; `--recompute DATA_PATH` also refits all 339 fits (about 20 minutes) |
+| `experiments/threshold_class_share.py` | `--data`, `--datasets`, `--output` (resumable CSV), `--max-series` (100), `--groups-file` |
 
-### 10.3 Python functions
+### 10.3 `experiments/pruning_demo.py` (one dataset, nothing saved)
+
+The demo runs the same steps as the runner on one dataset, one seed, one scorer and one threshold
+version, with the joint-PPV transform only. It prints a table, how many groups survive at each width,
+and (for `uniform` or `stratified`) which class set the thresholds. It writes nothing to disk.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--dataset NAME` | required | one dataset from the local archive |
+| `--data PATH` | `./data/Univariate_ts/` | folder with the UCR archive |
+| `--scorer` | ridge | `ridge` or `filter` |
+| `--bias-strategy` | original | `original`, `uniform` or `stratified` |
+| `--seed N` | 0 | random seed |
+| `--keep-fractions ...` | 1.0 0.75 0.5 0.3 0.2 0.1 | 1.0 is always added as the reference |
+| `--feature-count N` | 10000 | features to ask MiniRocket for |
+| `--repetitions N` | 3 | how often each test transform is timed (mean is shown) |
+
+On GunPoint, seed 0 (ridge, original thresholds):
+
+```
+ keep      groups features  accuracy   change   time  size KB exact
+ 1.00  1344/1344      9996    99.33%   +0.00pp  1.00x      234 yes
+ 0.50   672/1344      5496    99.33%   +0.00pp  0.55x      129 yes
+ 0.10   134/1344       975    99.33%   +0.00pp  0.13x       23 yes
+```
+
+Two things to keep in mind when reading it. `time` is relative to the unpruned **joint-PPV** model in
+the same session, so it is not the same baseline as the 0.36-0.46 of the original time in
+section 11. `size KB` is **worked out** from the feature count (ridge weights plus the scaler's mean
+and scale, 8 bytes each), not measured on disk.
+
+### 10.4 Python functions
 
 | Function | What it does |
 |---|---|
@@ -665,8 +708,11 @@ cannot be compared with one split.
 
 ```bash
 python -B -m unittest discover -s tests -p "test_pruned.py" -v      # my 13 tests
-python -B -m unittest discover -s tests                             # whole suite: 64 OK, 1 skipped
+python -B -m unittest discover -s tests -p "test_pruning_demo.py"   # 5 demo tests
+python -B -m unittest discover -s tests                             # whole suite: 73 OK, 1 skipped
 ```
+
+`tests/test_pruned.py`:
 
 | Test | What it checks |
 |---|---|
@@ -683,6 +729,16 @@ python -B -m unittest discover -s tests                             # whole suit
 | stratified fit returns original-compatible parameters | the result works with every existing transform |
 | single-example loop reproduces the original fit | given the same picks, my threshold code gives the original thresholds |
 | pooled quantiles match the oracle | the `examples_per_group > 1` option computes what it says |
+
+`tests/test_pruning_demo.py` (adapted from Shreyas's tests, section 14):
+
+| Test | What it checks |
+|---|---|
+| rows are consistent and exact | full model first, fewer groups at each level, every row exact, size formula right |
+| every scorer and bias strategy runs | all 6 combinations run and stay exact; an unknown scorer is rejected |
+| matches the runner | same features (SHA-256), feature count and accuracy as `experiments/group_pruning.py` |
+| threshold sources balanced when stratified | every class sets the thresholds of the same number of groups, give or take one |
+| published results are readable | `results/group_pruning_full/summary.csv` still gives the 86.08% headline |
 
 On top of the tests, the keep-everything transform gives output identical to Arnav's transform and is
 0.7% (GunPoint) to 3% (Wafer) slower (`experiments/sanity_keepall.py`).
@@ -714,6 +770,16 @@ Arnav measured joint PPV on an Apple ARM64 laptop with his own benchmark suite (
 at 9,996 features). On my Windows laptop, with my runner, the same code reached 0.811 of the original
 time. So the speed-up depends on the hardware, and the two numbers come from different machines and
 different measuring scripts ([section 19.9](#199-how-the-timings-were-taken-on-windows)).
+
+**In the group project.** Shreyas Shinde put my files into the team repository
+([minirocket-group-project](https://github.com/er-shreyas-shinde/minirocket-group-project), folder
+`Arya's Additions`). My code there came from this repository; the three scripts in section 19.13 were
+added here later and are not in the team repository yet. He added a launcher, `run_arya.py`
+(`python "Arya's Additions/run_arya.py" test`, `demo` or `experiment ...`), an integration layer
+(`pruning_service.py`) and two pages in the group's Streamlit app. `experiments/pruning_demo.py`
+and `tests/test_pruning_demo.py` in this repository are my adaptations of his integration layer and
+its tests. I changed them to read the local archive, reuse the runner's functions, and report the mean
+time like the runner does.
 
 ---
 
@@ -770,8 +836,9 @@ different measuring scripts ([section 19.9](#199-how-the-timings-were-taken-on-w
   uses 30 datasets.
 * Energy was not measured: the CodeCarbon reading on this laptop stayed the same whether the CPU was
   idle or busy ([section 19.11](#1911-energy-attempt)). Memory and model size on disk were not
-  measured either.
-* I did not analyse which widths and kernels survive pruning.
+  measured either; the demo's size column is worked out from the feature count.
+* I did not analyse which widths and kernels survive pruning across datasets. The demo shows it for
+  one dataset at a time.
 * Univariate, equal-length series without missing values only.
 
 **Next steps**
@@ -780,7 +847,7 @@ different measuring scripts ([section 19.9](#199-how-the-timings-were-taken-on-w
   from the combined study).
 * Try pooling several training series per group (`examples_per_group > 1`).
 * Measure energy on a machine with working power counters.
-* Save the keep masks and look at which widths and kernels survive.
+* Save the keep masks of the full run and look at which widths and kernels survive across datasets.
 * Compare with published ROCKET-pruning methods (S-ROCKET, POCKET, Detach-ROCKET).
 
 ---
@@ -827,6 +894,9 @@ from the files in `results/`.
 | 25,000 features | 10 datasets | 10 datasets, 1 seed, keep 100/50/20% | `group_pruning_25k/` |
 | Pilot | small check | 5 datasets, 2 seeds, 300 rows | `group_pruning_pilot/` |
 | Energy | 5 datasets | **skipped**: no valid power reading on this laptop | - |
+| Bootstrap intervals | (extra, for the paper) | reads the saved runs, no fitting | `equivalence.md` |
+| macOS vs Windows | (extra, for the paper) | 339 fits compared; all 339 refitted on Windows (about 20 min) | `cross_platform.md`, `cross_platform_stages.csv` |
+| Class share of thresholds | (extra, for the paper) | 112 datasets, up to 100 training series each | `threshold_class_share.csv` |
 
 **Skipped datasets.** 15 of the 128: 12 with series of different lengths (AllGestureWiimoteX/Y/Z,
 GestureMidAirD1-3, GesturePebbleZ1/Z2, MelbournePedestrian, PLAID, PickupGestureWiimoteZ,
@@ -1060,7 +1130,8 @@ Instead of editing those files, I put small stand-in modules on `PYTHONPATH`:
 | `compat_windows/sitecustomize.py` | `os.sysconf` for page size and memory size (loaded automatically, also in subprocesses) |
 | `compat_windows/resource.py` | peak memory from the Windows peak working set |
 
-After this, the whole suite gives 64 tests OK and 1 skipped (a test that only applies to Apple ARM64).
+After this, the whole suite gives 64 tests OK and 1 skipped (a test that only applies to Apple ARM64),
+73 OK since the demo and analysis tests were added.
 On Windows the benchmark's memory number is the peak working set, not the macOS measure Arnav's
 results use, so the two cannot be compared. The stand-ins are for Windows only.
 
@@ -1091,5 +1162,74 @@ names in `results/bias_study_subset.csv`.
 | `controls/` | `python -B -m experiments.controls --data ./data/Univariate_ts/ --output-dir results/controls`, then `python -B -m experiments.analyse_controls` |
 | `reference/` | `python -B -m experiments.compare_to_paper` (the authors' CSVs come from github.com/angus924/minirocket) |
 | final tests | `python -B -m experiments.final_analysis` (reads the saved CSVs) |
+| `equivalence.md` | `python -B -m experiments.equivalence` (reads the saved CSVs) |
+| `cross_platform.md`, `cross_platform_stages.csv` | `python -B -m experiments.cross_platform --recompute ./data/Univariate_ts/` (without `--recompute` it only re-reads the saved CSVs) |
+| `threshold_class_share.csv` | `NUMBA_NUM_THREADS=1 python -B -m experiments.threshold_class_share --data ./data/Univariate_ts/ --output results/threshold_class_share.csv` |
+
+### 19.13 Three checks added for the group paper
+
+All three read data that is already in the repository, or fit nothing new beyond the threshold code.
+
+**`experiments/equivalence.py`** (writes `results/equivalence.md`). Dataset-bootstrap intervals (seeds
+averaged per dataset, 10,000 resamples) for every pruning level against the full model, and for stratified
+against uniform thresholds. Keeping 50% of the groups with `filter` changed accuracy by -0.05 points (90%
+interval -0.29 to +0.19), so a loss larger than 0.3 points is unlikely; with `ridge` it is -0.27 points
+(-0.47 to -0.08), a small but real loss. Stratified against uniform: -0.002 points (90% interval -0.037 to
++0.035). The size of an acceptable loss has to be chosen **before** looking at an interval, so the script
+reports the interval and leaves the margin to the reader.
+
+**`experiments/cross_platform.py`** (writes `results/cross_platform.md`). Compares Arnav's macOS run with my
+Windows run, fit by fit, for the original MiniRocket with 9,996 features and seeds 0 to 2. All 339 pairs used
+the same split. 290 gave the same accuracy; 49 (on 26 datasets) differ by 1 to 17 test series, in both
+directions, and the difference averages 0.02 points in favour of Windows.
+
+To find where the two machines part ways, `--recompute` refits all 339 fits on Windows and recomputes the
+macOS harness's own stage hashes (writes `results/cross_platform_stages.csv`, about 20 minutes). Without
+`--recompute`, the script summarises the saved CSV again, so `results/cross_platform.md` can be rebuilt in a
+second:
+
+```
+python -B -m experiments.cross_platform                                     # from saved results
+python -B -m experiments.cross_platform --recompute ./data/Univariate_ts/   # refit everything again
+```
+
+| Stage | Same on Windows as on macOS |
+|---|---:|
+| input data | 339 of 339 |
+| fitted thresholds | 6 of 339 |
+| TRAIN / TEST features, scaler, classifier | 11 of 339 |
+| predictions | 279 of 339 |
+| accuracy | 290 of 339 |
+
+(Five fits have different thresholds but identical features: no value of the convolution output fell between
+the two versions of a threshold.) The input
+data is identical in all 339 fits, but the **fitted thresholds already differ in 333**; only 6 fits are
+identical end to end. Both machines used the same MiniRocket code, NumPy 2.3.5 and numba 0.63.1 (scikit-learn,
+aeon and the BLAS library differ, but they only act after the thresholds). MiniRocket's fitting code is
+compiled with `fastmath=True`, which lets the compiler reorder float32 sums, so the split is consistent with
+ARM and x86 rounding those sums differently (the same effect as the lesson in section 12); I did not prove it
+by switching fast math off.
+It is not a different random draw: on Windows, a different seed keeps accuracy identical in only 117 of 339
+seed pairs, while the two machines with the same seed agree in 290 of 339. The refit differs from macOS in
+exactly the same 49 fits as my committed Windows run did.
+
+**`experiments/threshold_class_share.py`** (writes `results/threshold_class_share.csv`, resumable). Each
+group takes its thresholds from one training series. For every threshold the script computes its value from
+every training series (at most 100 per dataset, same code as the real fit) and measures eta squared, the
+share of its variation explained by the series' class, with shuffled labels as the chance level. Fungi is
+skipped (every class has one training series).
+
+| Datasets | n | Median eta squared, true labels | Median eta squared, shuffled |
+|---|---:|---:|---:|
+| all | 112 | 0.26 | 0.03 |
+| imbalanced | 56 | 0.41 | 0.08 |
+| small | 26 | 0.14 | 0.03 |
+| rest | 30 | 0.05 | 0.01 |
+
+The true-label value is more than twice the shuffled value on 93 of 112 datasets, and on 20 datasets class
+explains more than half of the variation. So the idea that thresholds "differ little from class to class"
+is wrong for most datasets.
+Even so, stratifying changed accuracy by -0.002 points. I did not test why; a plausible reason is that the
+9,996 features overlap heavily, so the classifier does not depend on which class set a given threshold.
 
 Please cite the original method as in the [main README](./README.md#minirocket).
