@@ -22,6 +22,32 @@ Please cite as:
 }
 ```
 
+## Repository overview
+
+MiniRocket turns time series into features by applying convolutional kernels and
+measuring the proportion of responses above fitted thresholds (PPV). A linear
+classifier uses those features to predict the class. This repository retains the
+original implementation and adds the following extensions for fixed-length
+univariate data:
+
+| Part | What it does | Detailed guide |
+|---|---|---|
+| **Joint PPV** | Counts responses against several thresholds in one pass. It preserves the original features and predictions exactly while reducing pooling work. | [Joint PPV benchmark and setup](./benchmarks/README.md) |
+| **Group pruning** | Selects whole kernel/dilation groups using TRAIN data, then skips the convolution and pooling work for removed groups. Retained features stay exact, but using fewer groups can change accuracy. | [Group pruning](./README_GROUP_PRUNING.md#6-module-1-group-pruning) |
+| **Bias strategies** | Compares the original threshold fitting with uniform and class-stratified sampling of training examples. This tests whether balancing the classes used to fit thresholds improves accuracy or stability. | [Class-stratified biases](./README_GROUP_PRUNING.md#8-module-3-class-stratified-biases) |
+| **Controls** | Compares pruning with random group selection and smaller fresh models to establish where the speed and accuracy differences come from. | [Control experiments](./README_GROUP_PRUNING.md#7-module-2-controls) |
+
+Joint PPV reduces the cost of pooling within each group; pruning reduces the
+number of groups computed. They can be used together, with the classifier
+retrained on the retained features. Bias strategies change how thresholds are
+fitted and can be evaluated with either pooling implementation and with pruning.
+
+Start with the [results](#results) and [combined benchmark commands](#run-the-combined-benchmark)
+below. The [joint PPV guide](./benchmarks/README.md) covers its benchmark protocol,
+setup and outputs; the [group pruning and bias guide](./README_GROUP_PRUNING.md)
+covers algorithms, Python usage, controls and detailed experiments. The original
+multivariate and variable-length implementations are listed under [Code](#code).
+
 ## Podcast
 
 Hear more about MINIROCKET and time series classification on the [Data Skeptic](https://dataskeptic.com/blog/episodes/2021/minirocket) podcast!
@@ -38,15 +64,22 @@ MINIROCKET (including a basic multivariate implementation) is also available thr
 
 ## Results
 
-The current benchmark compares original MiniRocket with optimized joint PPV using
-pooling helpers 1 through 8, at matching feature counts.
+### Joint PPV (Mac)
+
+Measured on **macOS, Apple ARM64, 16 GB RAM**, with one Numba thread.
+
+The published results below compare original MiniRocket with optimized joint PPV
+using pooling helpers 1 through 8, at matching feature counts. To benchmark joint
+PPV together with group pruning and bias strategies, use the
+[combined benchmark](#run-the-combined-benchmark).
 
 * [Full report: accuracy, transform time and RAM](./results/joint_ppv_2026-10-26/report.md)
 * [Summary CSV](./results/joint_ppv_2026-10-26/summary.csv)
 * [Per-dataset comparisons](./results/joint_ppv_2026-10-26/per_dataset.csv)
 * [Raw measurements](./results/joint_ppv_2026-10-26/measurements.csv)
 * [Verification](./results/joint_ppv_2026-10-26/verification.json)
-* [How to run the benchmarks](./benchmarks/README.md)
+* [Run the combined benchmark](#run-the-combined-benchmark)
+* [Group pruning and bias strategy guide](./README_GROUP_PRUNING.md)
 
 The study covers 113 compatible UCR datasets, three fitting seeds on each supplied
 TRAIN/TEST split, and 2,436 / 4,956 / 9,996 actual features. Features and predictions
@@ -70,29 +103,122 @@ intervals and regressions are included in the full report. Results apply to the
 measured machine and compiler environment and are not a universal speed guarantee
 or an accuracy improvement.
 
-### Reproduce these results
+### Group pruning and bias strategies (Windows)
 
-Follow the [benchmark guide](./benchmarks/README.md) to set up the environment,
-[download the UCR archive](./benchmarks/README.md#setup-and-dataset-download),
-and [run the full comparison](./benchmarks/README.md#run-the-full-benchmark)
-on your own machine. The guide includes copyable commands for a quick single-dataset
-check and the full archive at all three feature counts, plus instructions for
-verifying the output. Use the [recorded settings and environment](./results/joint_ppv_2026-10-26/metadata.json)
-when comparing results; timings will vary with hardware and software.
+Measured on **Windows 11, AMD Ryzen 9 8940HX**, with one Numba thread. The
+[pruning benchmark](./results/group_pruning_full/report.md) used 113 datasets,
+three seeds and original biases, starting from **9,996 features (10,000 requested)**.
+All reductions below compare against unpruned original MiniRocket on that machine.
 
-After setup and dataset download, only the input and a new output directory are
-required:
+| Method | TEST transform time reduction | Mean accuracy |
+|---|---:|---:|
+| Original MiniRocket | Baseline | 86.08% |
+| Joint PPV, unpruned | 18.9% | 86.08% |
+| Joint PPV + filter pruning, keeping half the groups | 53.7% | 86.03% |
+| Joint PPV + ridge pruning, keeping half the groups | 63.8% | 85.81% |
+
+Pruning adds selection work during training and can reduce accuracy; filter
+scoring is the cheaper option.
+
+The [controls](./results/controls/controls_analysis.md) found similar accuracy
+with random group selection. The
+[bias study](./results/group_pruning_bias_all_20seeds/bias_analysis.md) found no
+consistent benefit from class-stratified thresholds over uniform sampling.
+
+The Mac and Windows studies use different hardware and timing protocols, so their
+speed reductions should not be compared directly. See the
+[group pruning and bias guide](./README_GROUP_PRUNING.md) for details.
+
+### Run the combined benchmark
+
+The combined runner evaluates **original pooling and optimized joint PPV** at
+every group-retention level, with original, uniform and class-stratified bias
+strategies. Groups are selected on TRAIN data, and the classifier is refitted on
+the retained features. Both pooling implementations must reproduce the full
+model's retained feature columns exactly; pruning and different bias strategies
+can change classification accuracy.
+
+Follow the [setup and dataset download instructions](./benchmarks/README.md#setup-and-dataset-download),
+then run the commands below from the repository root. Choose a **new output
+directory** for each experiment.
+
+#### Run the full benchmark
+
+Run all compatible datasets at requested feature counts `2500 5000 10000`
+(actual `2436 4956 9996`), with fitting seeds `0 1 2`, all three bias strategies,
+and all six default group-retention levels. The combined runner accepts one
+feature budget per invocation, so the loop runs the three budgets sequentially
+and writes each to its own folder. Analysis follows each successful run.
+
+The commands use the extension guide's recommended `filter` scorer. Iterative
+ridge scoring is substantially more expensive; use `--scorers ridge filter`
+to compare both scoring methods. A full sweep can take many hours.
 
 ```bash
-.venv/bin/python -B -m benchmarks.run \
-  --data ./data/Univariate_ts/ \
-  --output-dir ./results/full-benchmark-run/
+# Limit native threads for comparable timings.
+export NUMBA_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 BLIS_NUM_THREADS=1
+
+for features in 2500 5000 10000; do
+  run_dir="./results/combined-benchmark-run/features-${features}/"
+
+  .venv/bin/python -B -m experiments.group_pruning \
+    --data ./data/Univariate_ts/ \
+    --output-dir "$run_dir" \
+    --feature-count "$features" \
+    --scorers filter || break
+
+  .venv/bin/python -B -m experiments.summarise "$run_dir" || break
+  .venv/bin/python -B -m experiments.analyse_bias "$run_dir" \
+    --by-keep-fraction \
+    --subsets ./results/bias_study_groups_all113.csv || break
+done
 ```
 
-This uses all three feature counts and three fitting seeds, and generates the
-analysis automatically. See the guide's [optional settings](./benchmarks/README.md#optional-change-experiment-settings)
-to select datasets or change the experiment; the other options are not required.
-For existing measurements, see [analysis without benchmarking](./benchmarks/README.md#run-analysis-without-benchmarking).
+The runner keeps `100% / 75% / 50% / 30% / 20% / 10%` of groups by default; the
+100% case is the unpruned baseline. It writes `measurements.csv` and
+`metadata.json`. Start with `report.md` in each feature folder, generated by
+`experiments.summarise` along with `summary.csv`. The bias analysis writes
+`combined_analysis.md`. The loop stops if a benchmark or analysis command fails.
+
+#### Optional: change experiment settings
+
+For a smaller run, select fewer datasets, a smaller feature budget or fewer fitting
+seeds. This quick check uses GunPoint, 2,500 requested features and seed `0`:
+
+```bash
+.venv/bin/python -B -m experiments.group_pruning \
+  --data ./data/Univariate_ts/ \
+  --output-dir ./results/gunpoint-combined-run/ \
+  --scorers filter \
+  --datasets GunPoint \
+  --feature-count 2500 \
+  --seeds 0
+
+.venv/bin/python -B -m experiments.summarise ./results/gunpoint-combined-run/
+.venv/bin/python -B -m experiments.analyse_bias ./results/gunpoint-combined-run/ \
+  --by-keep-fraction \
+  --subsets ./results/bias_study_groups_all113.csv
+```
+
+Omit `--datasets` to use all compatible datasets, and omit `--seeds` to use the
+default three seeds (`0 1 2`). A single invocation defaults to 10,000 requested
+features; use `--feature-count` to select another budget. Both recipes use all
+three bias strategies by default. Use `--bias-strategies original` for pruning
+alone, or `--keep-fractions 1.0` to compare bias strategies without pruning.
+Include `1.0` when changing keep fractions so the summary has an unpruned
+baseline. The all-dataset version of the 2,500-feature, seed-0, filter-scored
+configuration was checked on all 113 compatible datasets.
+
+For all options, run `.venv/bin/python -B -m experiments.group_pruning --help`
+or see the [extension guide's options](./README_GROUP_PRUNING.md#10-all-options-command-line-and-python).
+
+The joint PPV table above uses the original unpruned benchmark's batching and
+timing protocol. The combined runner uses a different protocol and does not
+measure worker peak memory. To reproduce that table, follow the
+[original benchmark guide](./benchmarks/README.md#run-the-full-benchmark) and its
+[recorded settings and environment](./results/joint_ppv_2026-10-26/metadata.json).
+Timings depend on hardware and software.
 
 ## Requirements\*
 
@@ -104,6 +230,21 @@ For existing measurements, see [analysis without benchmarking](./benchmarks/READ
 \* *PyTorch is needed only for the softmax example. The archive benchmark also uses SciPy, aeon and threadpoolctl; see the [benchmark setup](./benchmarks/README.md#setup-and-dataset-download) and [recorded environment](./results/joint_ppv_2026-10-26/metadata.json).*
 
 ## Code
+
+### [`minirocket_pruned.py`](./code/minirocket_pruned.py)
+
+Group pruning for both original pooling and optimized joint PPV. A keep mask
+switches off whole kernel/dilation groups so their convolution and pooling work
+is skipped. Retained features match the corresponding full-model columns exactly.
+Groups can be ranked using filter or iterative ridge scoring on TRAIN data.
+
+### [`minirocket_stratified.py`](./code/minirocket_stratified.py)
+
+Uniform and class-stratified sampling of training examples for bias fitting.
+Uniform sampling provides the control for measuring the effect of stratification.
+Fitted parameters retain the original layout and work with both pooling
+implementations and group pruning. See the [extension guide](./README_GROUP_PRUNING.md)
+for Python examples, controls and experiment results.
 
 ### [`minirocket_joint_ppv_simd.py`](./code/minirocket_joint_ppv_simd.py)
 
@@ -123,8 +264,8 @@ file matches the generator. See [`generate_joint_ppv.py`](./tools/generate_joint
 ### [`minirocket_baseline.py`](./code/minirocket_baseline.py)
 
 Input validation and reproducible seeded fitting around the unchanged original
-univariate implementation. Both benchmark methods use this fitting adapter;
-the optimized module exposes it as `fit`.
+univariate implementation. The unpruned original/joint PPV comparison uses this
+fitting adapter; the optimized module exposes it as `fit`.
 
 ### [`minirocket.py`](./code/minirocket.py)
 
