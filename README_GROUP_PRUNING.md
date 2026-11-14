@@ -1186,24 +1186,7 @@ directions, and the difference averages 0.02 points in favour of Windows.
 To find where the two machines part ways, `--recompute` refits all 339 fits on Windows and recomputes the
 macOS harness's own stage hashes (writes `results/cross_platform_stages.csv`, about 20 minutes). Without
 `--recompute`, the script summarises the saved CSV again, so `results/cross_platform.md` can be rebuilt in a
-second:
-
-```
-python -B -m experiments.cross_platform                                     # from saved results
-python -B -m experiments.cross_platform --recompute ./data/Univariate_ts/   # refit everything again
-```
-
-| Stage | Same on Windows as on macOS |
-|---|---:|
-| input data | 339 of 339 |
-| fitted thresholds | 6 of 339 |
-| TRAIN / TEST features, scaler, classifier | 11 of 339 |
-| predictions | 279 of 339 |
-| accuracy | 290 of 339 |
-
-(Five fits have different thresholds but identical features: no value of the convolution output fell between
-the two versions of a threshold.) The input
-data is identical in all 339 fits, but the **fitted thresholds already differ in 333**; only 6 fits are
+second (commands in section 19.12). The input data is identical in all 339 fits, but the **fitted thresholds already differ in 333**; only 6 fits are
 identical end to end. Both machines used the same MiniRocket code, NumPy 2.3.5 and numba 0.63.1 (scikit-learn,
 aeon and the BLAS library differ, but they only act after the thresholds). MiniRocket's fitting code is
 compiled with `fastmath=True`, which lets the compiler reorder float32 sums, so the split is consistent with
